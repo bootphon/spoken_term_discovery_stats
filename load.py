@@ -27,13 +27,15 @@ import itertools
 # RESOLUTION PARAMETERS:
 FRATE = 100  # number of frames per seconds
 
+SIL_LABEL = 'SIL'
 
 def silentremove(filename):
     try:
         os.remove(filename)
-    except OSError as e: # this would be "except OSError, e:" before Python 2.6
-        if e.errno != errno.ENOENT: # errno.ENOENT = no such file or directory
-            raise # re-raise exception if a different error occured
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            # errno.ENOENT = no such file or directory
+            raise
 
 LabelledInterval = recordtype('LabelledInterval' ,'label interval')
 
@@ -60,6 +62,23 @@ def load_gold(goldfile):
     return res
 
 
+# def load_pos(buckeye_root):
+#     """Load the POS tagging from the buckeye corpus
+
+#     The corpus should be kept in the standard format
+#     (as on 23/07/2015 on oberon)
+#     """
+#     import glob
+#     res = {}
+#     for f in glob.glob(os.path.join(buckeye_root, '*', '*', '*.word')):
+#         fname = os.path.basename(f).split('.')[0]
+#         res[fname] = []
+#         with open(f) as fin:
+#             while fin.readline() != '#\n':
+#                 pass
+#             token = fin.readline().strip().replace(';', '').split()
+
+
 def load_disc(classfile):
     res = {}
     current_class = ''
@@ -79,15 +98,16 @@ def load_disc(classfile):
                 start, end = map(float, splitted[1:])
                 fname = splitted[0]
                 res[current_class].append(TranscribedInterval(
-                    fname, interval.Interval(start, end), None, None))
+                    fname, interval.Interval(start, end), None, None, None, None))
         if len(res[current_class]) == 1:
             del res[current_class]
     return res
 
 
-TranscribedInterval = recordtype('TranscribedInterval',
-                                 'fname interval phone_transcription'
-                                 ' frame_transcription')
+TranscribedInterval = recordtype(
+    'TranscribedInterval',
+    'fname interval phone_transcription'
+    ' frame_transcription prev_sil next_sil')
 
 
 def sort_disc(disc_dict):
@@ -104,9 +124,11 @@ def sort_disc(disc_dict):
 def annotate_phone_disc(gold_dict, disc_dict):
     """Annotate discovered fragments with gold at phone level.
     Change in place the (mutable) discovered fragments"""
-    #TODO: faster -> sort by file, sort by onset, read only from prev onset
     phone_index = 0
     for fname in disc_dict:
+        last_silence = 0.  # end of last encountered silence
+        # intervals without the "next silence" annotation:
+        intervals_without_silence = []
         for disc_interval in disc_dict[fname]:
             transcription = []
             fname = disc_interval.fname
@@ -114,6 +136,12 @@ def annotate_phone_disc(gold_dict, disc_dict):
             transcription_intervals = []
             # reading the corresponding gold transcription
             for phone_interval in gold_dict[fname][phone_index:]:
+                if phone_interval.label == SIL_LABEL:
+                    last_silence = phone_interval.interval.end
+                    for i in intervals_without_silence:
+                        i.interval.next_sil = min(
+                            0, phone_interval.interval.start - i.interval.end)
+                    intervals_without_silence = []
                 if phone_interval.interval.overlaps_with(disc_interval.interval):
                     transcription_started = True
                     transcription.append(phone_interval.label)
@@ -130,35 +158,9 @@ def annotate_phone_disc(gold_dict, disc_dict):
                 transcription_intervals, disc_interval.interval)
             disc_interval.phone_transcription = transcription
             disc_interval.frame_transcription = frame_transcription
-
-
-# def annotate_phone_disc(gold_dict, disc_dict):
-#     """Annotate discovered fragments with gold at phone level"""
-#     #TODO: faster -> sort by file, sort by onset, read only from prev onset
-#     res = {}
-#     for disc_class in disc_dict.keys():
-#         res[disc_class] = []
-#         for disc_interval in disc_dict[disc_class]:
-#             transcription = []
-#             fname = disc_interval.fname
-#             transcription_started = False
-#             transcription_intervals = []
-#             # reading the corresponding gold transcription
-#             for phone_interval in gold_dict[fname]:
-#                 if phone_interval.interval.overlaps_with(disc_interval.interval):
-#                     transcription_started = True
-#                     transcription.append(phone_interval.label)
-#                     transcription_intervals.append(phone_interval)
-#                 elif transcription_started:
-#                     # transcription started, but phone non overlap =>
-#                     # end of transcription
-#                     break
-#             frame_transcription = frame_alignement(
-#                 transcription_intervals, disc_interval.interval)
-#             res[disc_class].append(TranscribedInterval(
-#                 fname, disc_interval.interval, transcription,
-#                 frame_transcription))
-#     return res
+            disc_interval.prev_sil = min(
+                0, disc_interval.interval.start - last_silence)
+            intervals_without_silence.append(disc_interval)
 
 
 def frame_alignement(interval_list, disc_interval):
