@@ -98,7 +98,7 @@ def load_disc(classfile):
                 start, end = map(float, splitted[1:])
                 fname = splitted[0]
                 res[current_class].append(TranscribedInterval(
-                    fname, interval.Interval(start, end), None, None, None, None))
+                    fname, interval.Interval(start, end), None, None, {}))
         if len(res[current_class]) == 1:
             del res[current_class]
     return res
@@ -107,28 +107,30 @@ def load_disc(classfile):
 TranscribedInterval = recordtype(
     'TranscribedInterval',
     'fname interval phone_transcription'
-    ' frame_transcription prev_sil next_sil')
+    ' frame_transcription stats')
 
 
 def sort_disc(disc_dict):
     """Return a dictionnary by file of the interval sorted by start
     """
     # iterator over all intervals:
+    # def iter_all(dict_of_lists):
+    #     for l in dict_of_lists.itervalues():
+    #         for e in l:
+    #             yield e
     it_all = itertools.chain.from_iterable(disc_dict.itervalues())
     return {fname: sorted(interv_it, key=lambda x: x.interval.start)
            for fname, interv_it in itertools.groupby(
-                   it_all,
+                   sorted(it_all, key=lambda x: x.fname),
                    key=lambda x: x.fname)}
 
 
 def annotate_phone_disc(gold_dict, disc_dict):
     """Annotate discovered fragments with gold at phone level.
     Change in place the (mutable) discovered fragments"""
-    phone_index = 0
     for fname in disc_dict:
+        phone_index = 0
         last_silence = 0.  # end of last encountered silence
-        # intervals without the "next silence" annotation:
-        intervals_without_silence = []
         for disc_interval in disc_dict[fname]:
             transcription = []
             fname = disc_interval.fname
@@ -138,11 +140,9 @@ def annotate_phone_disc(gold_dict, disc_dict):
             for phone_interval in gold_dict[fname][phone_index:]:
                 if phone_interval.label == SIL_LABEL:
                     last_silence = phone_interval.interval.end
-                    for i in intervals_without_silence:
-                        i.interval.next_sil = min(
-                            0, phone_interval.interval.start - i.interval.end)
-                    intervals_without_silence = []
                 if phone_interval.interval.overlaps_with(disc_interval.interval):
+                    if not transcription_started:
+                        current_last_silence = last_silence
                     transcription_started = True
                     transcription.append(phone_interval.label)
                     transcription_intervals.append(phone_interval)
@@ -158,9 +158,19 @@ def annotate_phone_disc(gold_dict, disc_dict):
                 transcription_intervals, disc_interval.interval)
             disc_interval.phone_transcription = transcription
             disc_interval.frame_transcription = frame_transcription
-            disc_interval.prev_sil = min(
-                0, disc_interval.interval.start - last_silence)
-            intervals_without_silence.append(disc_interval)
+            disc_interval.stats['prev_sil'] = max(
+                0, disc_interval.interval.start - current_last_silence)
+            # finding next silence:
+            disc_interval.stats['next_sil'] = max(
+                0, gold_dict[fname][-1].interval.start -
+                disc_interval.interval.end)
+            for phone_interval in gold_dict[fname][
+                    phone_index+len(disc_interval.phone_transcription)-1:]:
+                if phone_interval.label == SIL_LABEL:
+                    disc_interval.stats['next_sil'] = max(
+                        0, phone_interval.interval.start -
+                        disc_interval.interval.end)
+                    break
 
 
 def frame_alignement(interval_list, disc_interval):

@@ -1,12 +1,16 @@
 """Compute several stats on discovered clusters"""
 
 from __future__ import division
+from __future__ import print_function
 import tde.measures.nlp as nlp
 import load
 import itertools
 import collections
 import abnet.sampler as dtw
 import numpy as np
+
+epsilon = 0.0001
+SIL_LABEL = load.SIL_LABEL
 
 
 def run(gold_file, disc_file):
@@ -38,10 +42,20 @@ def compute_neds(annotated_pairs):
     ned(x, y) = levenstein(x, y) / max(|x|, |y|)
     """
     for pair in annotated_pairs:
-        pair.stats['phone_ned'] = nlp.ned(pair.i1.phone_transcription,
-                                          pair.i2.phone_transcription)
-        pair.stats['frame_ned'] = nlp.ned(pair.i1.frame_transcription,
-                                          pair.i2.frame_transcription)
+        pair.stats['phone_ned'] = nlp.ned(
+            pair.i1.phone_transcription,
+            pair.i2.phone_transcription)
+        pair.stats['frame_ned'] = nlp.ned(
+            pair.i1.frame_transcription,
+            pair.i2.frame_transcription)
+
+
+def compute_silences(discovered_fragments):
+    """Compute the proportion of silence in the discovered fragments
+    """
+    for fragments in discovered_fragments.itervalues():
+        for fragment in fragments:
+            fragment.stats['silence_proportion'] = fragment.frame_transcription.count('SIL') / len(fragment.frame_transcription)
 
 
 def compute_dtws(annotated_pairs, feature_file):
@@ -51,12 +65,13 @@ def compute_dtws(annotated_pairs, feature_file):
     for pair in annotated_pairs:
         segment1 = pair.i1.interval
         segment2 = pair.i2.interval
-        dtws = featuresAPI.do_dtw((pair.i1.fname, segment1.start, segment1.end),
-                                  (pair.i2.fname, segment2.start, segment2.end))
+        dtws = featuresAPI.do_dtw(
+            (pair.i1.fname, segment1.start, segment1.end),
+            (pair.i2.fname, segment2.start, segment2.end))
         pair.stats['dtw'] = dtws[0]
         pair.stats['temp_dist'] = temporal_distance(np.array(dtws[1]), np.array(dtws[2]))
-        assert abs(len(pair.i1.frame_transcription) - dtws[1][-1] - 1) <= 1
-        assert abs(len(pair.i2.frame_transcription) - dtws[2][-1] - 1) <= 1
+        # assert abs(len(pair.i1.frame_transcription) - dtws[1][-1] - 1) <= 1
+        # assert abs(len(pair.i2.frame_transcription) - dtws[2][-1] - 1) <= 1
         pair.stats['dtw_transcription'] = dtw_transcription_distance(
             pair.i1.frame_transcription, dtws[1],
             pair.i2.frame_transcription, dtws[2])
@@ -82,10 +97,10 @@ def temporal_distance(path1, path2, wlen=5):
     only f' is approximated to the growth rate on that resolution)
     """
     assert len(path1) > 5
-    x_diff = path1[wlen:] - path1[:wlen]
-    y_diff = path2[wlen:] - path2[:wlen]
+    x_diff = path1[wlen:] - path1[:-wlen]
+    y_diff = path2[wlen:] - path2[:-wlen] + epsilon
     f_prime = x_diff / y_diff
-    return np.mean(np.abs(np.log(f_prime)))
+    return np.mean(np.abs(np.log(f_prime + epsilon)))
 
 
 def dtw_transcription_distance(transcription1, path1, transcription2, path2):
@@ -93,12 +108,16 @@ def dtw_transcription_distance(transcription1, path1, transcription2, path2):
     (dtw usually calculated with an other distance)
     """
     t1, t2 = np.array(transcription1), np.array(transcription2)
-    assert path1[-1]+1 == t1.size or path1[-1]+2 == t1.size
-    assert path2[-1]+1 == t2.size or path2[-1]+2 == t2.size, '{} {}'.format(path2[-1], t2.size)
-    if path1[-1] + 1 != t1.size:
+    # assert path1[-1]+1 == t1.size or path1[-1]+2 == t1.size
+    # assert path2[-1]+1 == t2.size or path2[-1]+2 == t2.size, '{} {}'.format(path2[-1], t2.size)
+    if path1[-1] + 2 == t1.size:
         t1 = t1[1:]
-    if path2[-1] + 1 != t2.size:
+    if path2[-1] + 2 == t2.size:
         t2 = t2[1:]
+    if path1[-1] == t1.size:
+        t1 = np.append(t1, t1[-1])
+    if path2[-1] == t2.size:
+        t2 = np.append(t2, t2[-1])
     t1_align, t2_align = t1[path1], t2[path2]
     return np.mean(t1_align != t2_align)
 
@@ -108,17 +127,41 @@ def find_pos(pos_tagging_dict):
 
 
 def tests():
-    gold_file = 'test/test.phn'
-    disc_file = 'test/master_graph.zs'
+    gold_file = 'test/new_english.phn'
+    # disc_file = 'test/master_graph.zs'
+    disc_file = 'test/english_disc'
     features_file = 'test/buckeye_fea_raw.h5f'
     gold_phones = load.load_gold(gold_file)
     disc_frags = load.load_disc(disc_file)
     disc_sorted_by_file = load.sort_disc(disc_frags)
     load.annotate_phone_disc(gold_phones, disc_sorted_by_file)
+    compute_silences(disc_frags)
     pairs = make_pairs(disc_frags)
     compute_neds(pairs)
     compute_dtws(pairs, features_file)
-    print pairs
+    print_csv(pairs, 'res.txt')
+
+
+def print_csv(annotated_pairs, csvfile):
+    with open(csvfile, 'w') as fout:
+        print('\t'.join([
+            'file name i1', 'onset i1', 'offset i1',
+            'file name i2', 'onset i2', 'offset i2',
+            'transcription i1', 'transcription i2',
+            'previous silence i1', 'next silence i1', 'proportion silence i1',
+            'previous silence i2', 'next silence i2', 'proportion silence i2',
+            'phone level ned', 'frame level ned', 'frame aligned error rate',
+            'temporal distance', 'dtw']), file=fout)
+        for pair in annotated_pairs:
+            print('\t'.join(str(x) for x in [
+                pair.i1.fname, pair.i1.interval.start, pair.i1.interval.end,
+                pair.i2.fname, pair.i2.interval.start, pair.i2.interval.end,
+                '-'.join(pair.i1.phone_transcription), '-'.join(pair.i2.phone_transcription),
+                pair.i1.stats['prev_sil'], pair.i1.stats['next_sil'], pair.i1.stats['silence_proportion'],
+                pair.i2.stats['prev_sil'], pair.i2.stats['next_sil'], pair.i2.stats['silence_proportion'],
+                pair.stats['phone_ned'], pair.stats['frame_ned'],
+                pair.stats['dtw_transcription'], pair.stats['temp_dist'],
+                pair.stats['dtw']]), file=fout)
 
 
 if __name__ == '__main__':
