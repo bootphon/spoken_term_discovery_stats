@@ -17,4 +17,4 @@ if __name__ == '__main__':
     pairs = stats.make_pairs(disc_frags)
     stats.compute_neds(pairs)
     stats.compute_dtws(pairs, features_file)
-    stats.print_csv(pairs, 'res_gold.txt')
+    stats.print_csv(pairs, 'res_500ms_gold.txt')

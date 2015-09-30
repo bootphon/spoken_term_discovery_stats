@@ -6,8 +6,10 @@ import tde.measures.nlp as nlp
 import load
 import itertools
 import collections
-import abnet.sampler as dtw
 import numpy as np
+import h5features
+from dtw import DTW
+import numba as nb
 
 epsilon = 0.0001
 SIL_LABEL = load.SIL_LABEL
@@ -22,6 +24,50 @@ def run(gold_file, disc_file):
 
 IntervalPairs = collections.namedtuple('IntervalPairs',
                                        ['i1', 'i2', 'stats'])
+
+
+class FeaturesAPI:
+    """wrapper for h5features manipulation
+    """
+    def __init__(self, feature_file):
+        self.feature_file = feature_file
+        self.index = h5features.read_index(feature_file)
+
+
+    def get_features(self, segment):
+        """return the features associated to a segment = (file, start, end)"""
+        fileid, start, end = segment
+        return h5features.read(self.feature_file, from_internal_file=fileid,
+                                   from_time=start, to_time=end,
+                                   index=self.index)[1][fileid]
+
+    def get_features_from_file(self, fileid):
+        """return the features accosiated to a file"""
+        return h5features.read(self.feature_file, from_internal_file=fileid,
+                               index=self.index)[1][fileid]
+    
+    def do_dtw(self, segment1, segment2):
+        dtw = DTW(self.get_features(segment1), self.get_features(segment2),
+                  return_alignment=1, python_dist_function=cosine_distance_numba)
+        return dtw[0], dtw[-1][1], dtw[-1][2]
+
+    def do_dtw_deciles(self, segment1, segment2, cut=10):
+        features1, features2 = map(self.get_features, [segment1, segment2])
+        dtw = DTW(self.get_features(segment1), self.get_features(segment2),
+                  return_alignment=1, python_dist_function=cosine_distance_numba)
+        dtw_dist_onpath = compute_distance_onpath(
+            features1, features2, dtw[-1][1], dtw[-1][2], cosine_distance_numba)
+        dtw_dist_cuts = np.array_split(dtw_dist_onpath, cut)
+        assert (np.mean(dtw_dist_onpath) - dtw[0]/len(dtw[-1][1])) <= 0.001, '{}. {}'.format(np.mean(dtw_dist_onpath), dtw[0]/len(dtw[-1][1]))
+        return np.mean(dtw_dist_onpath), dtw[-1][1], dtw[-1][2], [np.mean(x) for x in dtw_dist_cuts]
+
+
+def compute_distance_onpath(feats1, feats2, path1, path2, dist_fun):
+    assert len(path1) == len(path2)
+    res = np.empty((len(path1),))
+    for index, (i, j) in enumerate(zip(path1, path2)):
+        res[index] = dist_fun(feats1[i, :], feats2[j, :])
+    return res
 
 
 def make_pairs(intervals_dict):
@@ -61,14 +107,15 @@ def compute_silences(discovered_fragments):
 def compute_dtws(annotated_pairs, feature_file, cut=10):
     """Compute dtw cosine distance between each pair of words
     """
-    featuresAPI = dtw.FeaturesAPI(feature_file)
+    featuresAPI = FeaturesAPI(feature_file)
     for pair in annotated_pairs:
         segment1 = pair.i1.interval
         segment2 = pair.i2.interval
-        dtws = featuresAPI.do_dtw(
+        dtws = featuresAPI.do_dtw_deciles(
             (pair.i1.fname, segment1.start, segment1.end),
             (pair.i2.fname, segment2.start, segment2.end))
         pair.stats['dtw'] = dtws[0]
+        pair.stats['dtw_cuts'] = dtws[3]
         # dtw_cuts = np.array_split(dtws[0], cut)
         # pair.stats['dtw_deciles'] = [np.mean(x) for x in dtw_cuts]
         pair.stats['temp_dist'] = temporal_distance(np.array(dtws[1]), np.array(dtws[2]))
@@ -194,6 +241,22 @@ def find_pos(pos_tagging_dict):
     raise NotImplementedError
 
 
+@nb.autojit
+def cosine_distance_numba(A, B):
+    norm_A = 0
+    norm_B = 0
+    numerator = 0    
+    for k in range(len(A)):
+        numerator += A[k] * B[k]
+        norm_A += A[k] * A[k]
+        norm_B += B[k] * B[k]
+    similarity = numerator / (np.sqrt(norm_A) * np.sqrt(norm_B))
+    return (1 - similarity)/2
+
+def cosine_distance_numpy(A, B):
+    return 1 - (np.dot(A.T, B) / (np.linalg.norm(A) * np.linalg.norm(B)))
+
+
 def tests():
     gold_file = 'test/new_english.phn'
     # disc_file = 'test/master_graph.zs'
@@ -219,16 +282,21 @@ def print_csv(annotated_pairs, csvfile):
             'previous silence i1', 'next silence i1', 'proportion silence i1',
             'previous silence i2', 'next silence i2', 'proportion silence i2',
             'phone level ned', 'frame level ned', 'frame aligned mismatch',
-            'temporal distance', 'normalized temporal distance', 'dtw',
-            'frame mismatch deciles 1', 'frame mismatch deciles 2',
-            'frame mismatch deciles 3', 'frame mismatch deciles 4',
-            'frame mismatch deciles 5', 'frame mismatch deciles 6',
-            'frame mismatch deciles 7', 'frame mismatch deciles 8',
-            'frame mismatch deciles 9', 'frame mismatch deciles 10',
-            # 'dtw decile 1', 'dtw decile 2', 'dtw decile 3',
-            # 'dtw decile 4', 'dtw decile 5', 'dtw decile 6',
-            # 'dtw decile 7', 'dtw decile 8', 'dtw decile 9',
-            # 'dtw decile 10',
+            'temporal distance', 'normalized temporal distance',
+            'normalized dtw cosine distance',
+            'frame mismatch d1', 'frame mismatch d2',
+            'frame mismatch d3', 'frame mismatch d4',
+            'frame mismatch d5', 'frame mismatch d6',
+            'frame mismatch d7', 'frame mismatch d8',
+            'frame mismatch d9', 'frame mismatch d10',
+            'cosine dist d1', 'cosine dist d2', 'cosine dist d3',
+            'cosine dist d4', 'cosine dist d5', 'cosine dist d6',
+            'cosine dist d7', 'cosine dist d8', 'cosine dist d9',
+            'cosine dist d10',
+            'norm temp dist d1', 'norm temp dist d2', 'norm temp dist d3',
+            'norm temp dist d4', 'norm temp dist d5', 'norm temp dist d6',
+            'norm temp dist d7', 'norm temp dist d8', 'norm temp dist d9',
+            'norm temp dist d10',
         ]), file=fout)
         for pair in annotated_pairs:
             print('\t'.join(str(x) for x in [
@@ -241,7 +309,8 @@ def print_csv(annotated_pairs, csvfile):
                 pair.stats['dtw_transcription'], pair.stats['temp_dist'],
                 pair.stats['norm_temp'], pair.stats['dtw'],]
                             + pair.stats['frame_mismatch_deciles']
-                            # + pair.stats['dtw_cuts']
+                            + pair.stats['dtw_cuts']
+                            + pair.stats['norm_temp_cuts']
                         ),
                   file=fout)
 
