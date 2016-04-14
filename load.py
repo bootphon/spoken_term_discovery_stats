@@ -43,6 +43,7 @@ LabelledInterval = recordtype('LabelledInterval' ,'label interval')
 def load_gold(goldfile):
     res = {}
     current_file = ''
+    prev_end = -1
     with open(goldfile) as fin:
         for line in fin:
             splitted = line.strip().split()
@@ -53,12 +54,18 @@ def load_gold(goldfile):
                 # New file
                 current_file = splitted[0]
                 res[current_file] = []
+                prev_end = 0
             else:
                 assert len(splitted) == 3, splitted
                 start, end = map(float, splitted[:2])
+                if prev_end != start:
+                    astart, aend = prev_end, start
+                    res[current_file].append(LabelledInterval(
+                        SIL_LABEL, interval.Interval(astart, aend)))
                 phone = splitted[2]
                 res[current_file].append(LabelledInterval(
                     phone, interval.Interval(start, end)))
+                prev_end = end
     return res
 
 
@@ -104,7 +111,7 @@ def load_disc(classfile):
     return res
 
 
-def load_disc_pairs(pairfile):
+def load_disc_pairs(pairfile, times='seconds'):
     res = {}
     current_class = ''
     with open(pairfile) as fin:
@@ -115,16 +122,24 @@ def load_disc_pairs(pairfile):
             splitted = line.strip().split(',')
             if len(splitted) == 1:
                 splitted = line.strip().split()
-            assert len(splitted) == 8, splitted
-            start1, end1, start2, end2 = map(lambda x: float(x)/100, splitted[2:6])
+            # assert len(splitted) == 8, splitted
+            if times == 'seconds':
+                start1, end1, start2, end2 = map(float, splitted[2:6])
+            else:
+                start1, end1, start2, end2 = map(lambda x: float(x)/100, splitted[2:6])
             fname1, fname2 = splitted[0:2]
-            dtw_aren, score_aren = map(float, splitted[6:])
+            if len(splitted) > 6:
+                dtw_aren, score_aren = map(float, splitted[6:])
+            else:
+                dtw_aren, score_aren = (0., 0.)
             res[current_class].append(TranscribedInterval(
                 fname1, interval.Interval(start1, end1), None, None,
-                {'dtw_aren':dtw_aren, 'score_aren': score_aren}))
+                #['None'], ['None'] * int((end1 - start1) * 100),
+                {'dtw_aren': dtw_aren, 'score_aren': score_aren}))
             res[current_class].append(TranscribedInterval(
                 fname2, interval.Interval(start2, end2), None, None,
-                {'dtw_aren':dtw_aren, 'score_aren': score_aren}))
+                # ['None'], ['None'] * int((end2 - start2) * 100),
+                {'dtw_aren': dtw_aren, 'score_aren': score_aren}))
     return res
 
 
@@ -149,7 +164,7 @@ def sort_disc(disc_dict):
                    key=lambda x: x.fname)}
 
 
-def annotate_phone_disc(gold_dict, disc_dict):
+def annotate_phone_disc(gold_dict, disc_dict, disc_list=None):
     """Annotate discovered fragments with gold at phone level.
     Change in place the (mutable) discovered fragments"""
     for fname in disc_dict:
@@ -162,7 +177,11 @@ def annotate_phone_disc(gold_dict, disc_dict):
             transcription_started = False
             transcription_intervals = []
             # reading the corresponding gold transcription
-            for phone_interval in gold_dict[fname][phone_index:]:
+            curr_phone_index = phone_index
+            start_phone_index = phone_index
+            while curr_phone_index < len(gold_dict[fname]):
+            # for phone_interval in gold_dict[fname][aux:]:
+                phone_interval = gold_dict[fname][curr_phone_index]
                 if phone_interval.interval.overlaps_with(disc_interval.interval):
                     if not transcription_started: 
                        current_last_silence = last_silence
@@ -179,19 +198,22 @@ def annotate_phone_disc(gold_dict, disc_dict):
                     phone_index += 1
                 if phone_interval.label == SIL_LABEL:
                     last_silence = phone_interval.interval.end
-            if not transcription_intervals:
-                print disc_interval
-                break
-            frame_transcription = frame_alignement(
-                transcription_intervals, disc_interval.interval)
-            disc_interval.phone_transcription = transcription
-            disc_interval.frame_transcription = frame_transcription
+                curr_phone_index += 1
             disc_interval.stats['prev_sil'] = max(
                 0, disc_interval.interval.start - current_last_silence)
             # finding next silence:
             disc_interval.stats['next_sil'] = max(
                 0, gold_dict[fname][-1].interval.start -
                 disc_interval.interval.end)
+            if not transcription_intervals:
+                transcription_intervals = ['None']
+                print "Error:"
+                print disc_interval
+                phone_index = start_phone_index
+            frame_transcription = frame_alignement(
+                transcription_intervals, disc_interval.interval)
+            disc_interval.phone_transcription = transcription
+            disc_interval.frame_transcription = frame_transcription
             for phone_interval in gold_dict[fname][
                     phone_index+len(disc_interval.phone_transcription)-1:]:
                 if phone_interval.label == SIL_LABEL:
@@ -199,6 +221,7 @@ def annotate_phone_disc(gold_dict, disc_dict):
                         0, phone_interval.interval.start -
                         disc_interval.interval.end)
                     break
+
 
 
 def frame_alignement(interval_list, disc_interval):
