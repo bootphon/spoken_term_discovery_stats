@@ -82,6 +82,17 @@ def make_pairs(intervals_dict):
     return res
 
 
+def compute_phone_ned(annotated_pairs):
+    """Compute phone level ned for each pair of
+    word
+    ned(x, y) = levenstein(x, y) / max(|x|, |y|)
+    """
+    for pair in annotated_pairs:
+        pair.stats['phone_ned'] = nlp.ned(
+            pair.i1.phone_transcription,
+            pair.i2.phone_transcription)
+
+
 def compute_neds(annotated_pairs):
     """Compute phone level ned and frame level ned for each pair of
     word
